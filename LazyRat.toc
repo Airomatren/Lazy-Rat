@@ -1,0 +1,10 @@
+## Interface: 120105, 120107
+## Title: Lazy Rat
+## Notes: Auto-accept res, battle res, summons, queue pops and premade sign-ups. /lr
+## Author: Airomatren
+## Version: 1.0.0
+## IconTexture: Interface\AddOns\LazyRat\Media\icon
+## SavedVariables: LazyRatDB
+## SavedVariablesPerCharacter: LazyRatCharDB
+
+LazyRat.lua
