@@ -22,6 +22,11 @@ Type `/lr` or click the minimap button to open the settings.
 - **Chat message:** prints a line in chat whenever Lazy Rat accepts something.
 - **Raid warning message:** shows the big message in the middle of your screen as well.
 
+### Early Pull
+- **Log early pulls:** when combat starts before a pull countdown reaches zero, Lazy Rat logs the date and time, how many seconds early it was, the boss or zone, and who started the countdown. Cancelling a countdown by hand doesn't count.
+- **List and export:** the Early Pull tab shows the log, newest first. Click the list to select everything, then press **Ctrl+C** to copy it. Each line also ends with the Unix time and encounter ID, for matching against Warcraft Logs.
+- **Clear Data:** empties the log.
+
 All settings except Preferred Roles are shared across your account.
 
 ## Installation

@@ -7,7 +7,7 @@ local ICON = "Interface\\AddOns\\LazyRat\\Media\\icon"
 local DEFAULTS = {
     res = true, bres = true, summon = true, hideProfGear = true,
     queuePop = true, notifyChat = true, notifyWarning = true,
-    autoSign = true,
+    autoSign = true, earlyPull = true,
     minimapShow = true, minimapAngle = 225,
 }
 local CHAR_DEFAULTS = { roleTank = false, roleHealer = false, roleDamage = true }
@@ -152,6 +152,63 @@ local function SetupApplicationDialog()
 end
 
 ---------------------------------------------------------------------------
+-- Early pull log: combat starting before a pull countdown reaches zero
+---------------------------------------------------------------------------
+-- Midnight can hand addons secret values that can't be stored or shown; treat them as unknown.
+local function Plain(v)
+    if issecretvalue and issecretvalue(v) then return nil end
+    return v
+end
+
+local countdownEnd, countdownBy, cancelledAt, lastPull, lastPullAt
+local earlyList -- the Early Pull page's list box, once the menu is built
+
+-- Newest first. Unix time and encounter ID are kept on each line so the log can be matched to Warcraft Logs.
+local function EarlyPullText()
+    local lines = {}
+    for i = #db.earlyPulls, 1, -1 do
+        local e = db.earlyPulls[i]
+        lines[#lines + 1] = string.format("%s | %.2fs early | %s | countdown by %s | %d | %s",
+            date("%Y-%m-%d %H:%M:%S", e.time), e.early, e.where or "?", e.by or "?", e.time, e.encounterID or "")
+    end
+    return #lines > 0 and table.concat(lines, "\n") or "No early pulls logged yet."
+end
+
+local function RefreshEarlyList()
+    if earlyList then earlyList:SetText(EarlyPullText()) end
+end
+
+local function OnCountdownStart(timeRemaining, initiatedByName)
+    timeRemaining = Plain(timeRemaining)
+    if not timeRemaining then return end
+    countdownEnd, countdownBy, cancelledAt = GetTime() + timeRemaining, Plain(initiatedByName), nil
+end
+
+local function OnCombatStart(encounterID, encounterName)
+    local now = GetTime()
+    -- ENCOUNTER_START can trail PLAYER_REGEN_DISABLED; give the entry just logged its boss.
+    if encounterID and lastPull and now - lastPullAt < 3 and not lastPull.encounterID then
+        lastPull.encounterID = Plain(encounterID)
+        lastPull.where = Plain(encounterName) or lastPull.where
+        RefreshEarlyList()
+        return
+    end
+    if not (db.earlyPull and countdownEnd and now < countdownEnd) then return end
+    -- A cancel well before combat was someone stopping the countdown, not the pull itself.
+    if cancelledAt and now - cancelledAt > 0.5 then
+        countdownEnd = nil
+        return
+    end
+    lastPull = {
+        time = time(), early = countdownEnd - now, by = countdownBy,
+        encounterID = Plain(encounterID), where = Plain(encounterName) or GetRealZoneText(),
+    }
+    lastPullAt, countdownEnd = now, nil
+    tinsert(db.earlyPulls, lastPull)
+    RefreshEarlyList()
+end
+
+---------------------------------------------------------------------------
 -- Menu
 ---------------------------------------------------------------------------
 local menu, minimapBtn
@@ -245,6 +302,12 @@ local function NewPage(parent)
         y = y - fs:GetStringHeight() - 6
     end
 
+    -- Stretches a frame over the rest of the page.
+    function page:Fill(frame)
+        frame:SetPoint("TOPLEFT", 6, y)
+        frame:SetPoint("BOTTOMRIGHT")
+    end
+
     return page
 end
 
@@ -327,6 +390,50 @@ local function BuildMenu()
     notifications:Check("notifyWarning", "Raid warning message")
     notifications:Note("Shown whenever Lazy Rat auto-accepts a res, summon, queue pop, role check or sign-up.")
 
+    local early = NewPage(menu)
+    early:Header("Early Pull")
+    early:Check("earlyPull", "Log pulls that start before the countdown ends")
+    early:Note("Each line: time, how early combat started, boss or zone, who started the countdown, Unix time and encounter ID. Click the list to select it all, then press |cffffffffCtrl+C|r to copy.")
+
+    local clear = CreateFrame("Button", nil, early, "BackdropTemplate")
+    clear:SetSize(90, 20)
+    clear:SetPoint("TOPRIGHT", 0, -28)
+    Backdrop(clear, C.box, C.border)
+    local clearText = Text(clear, 11, C.text, "OUTLINE")
+    clearText:SetPoint("CENTER")
+    clearText:SetText("Clear Data")
+    clear:SetScript("OnClick", function()
+        wipe(db.earlyPulls)
+        lastPull = nil
+        RefreshEarlyList()
+    end)
+    clear:SetScript("OnEnter", function() clear:SetBackdropBorderColor(unpack(C.accent)) end)
+    clear:SetScript("OnLeave", function() clear:SetBackdropBorderColor(unpack(C.border)) end)
+
+    local box = CreateFrame("Frame", nil, early, "BackdropTemplate")
+    early:Fill(box)
+    Backdrop(box, C.box, C.border)
+    local scroll = CreateFrame("ScrollFrame", nil, box, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 6, -6)
+    scroll:SetPoint("BOTTOMRIGHT", -26, 6)
+    earlyList = CreateFrame("EditBox", nil, scroll)
+    earlyList:SetMultiLine(true)
+    earlyList:SetAutoFocus(false)
+    earlyList:SetFont(FONT, 11, "")
+    earlyList:SetTextColor(unpack(C.text))
+    earlyList:SetWidth(410)
+    scroll:SetScrollChild(earlyList)
+    -- Read-only: typing is undone, and focusing selects everything ready for Ctrl+C.
+    earlyList:SetScript("OnTextChanged", function(self, userInput)
+        if userInput then
+            self:SetText(EarlyPullText())
+            self:HighlightText()
+        end
+    end)
+    earlyList:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+    earlyList:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    RefreshEarlyList()
+
     -- Sidebar tabs
     local tabs = {}
     local function Select(sel)
@@ -338,10 +445,19 @@ local function BuildMenu()
             t.label:SetTextColor(unpack(on and { 1, 1, 1, 1 } or C.dim))
         end
     end
-    for i, def in ipairs({ { "General", general }, { "Auto Queue", queue }, { "Notifications", notifications } }) do
+    -- A third field pins the tab to the bottom of the sidebar.
+    local tabDefs = {
+        { "General", general }, { "Auto Queue", queue }, { "Notifications", notifications },
+        { "Early Pull", early, true },
+    }
+    for i, def in ipairs(tabDefs) do
         local t = CreateFrame("Button", nil, menu)
         t:SetSize(132, 36)
-        t:SetPoint("TOPLEFT", 1, -41 - (i - 1) * 36)
+        if def[3] then
+            t:SetPoint("BOTTOMLEFT", 1, 1)
+        else
+            t:SetPoint("TOPLEFT", 1, -41 - (i - 1) * 36)
+        end
         t.page = def[2]
         t.bg = t:CreateTexture(nil, "BACKGROUND", nil, 2)
         t.bg:SetAllPoints()
@@ -440,6 +556,7 @@ events:SetScript("OnEvent", function(self, event, ...)
         for k, v in pairs(DEFAULTS) do
             if db[k] == nil then db[k] = v end
         end
+        db.earlyPulls = db.earlyPulls or {}
         LazyRatCharDB = LazyRatCharDB or {}
         charDb = LazyRatCharDB
         -- Seed from the old account-wide roles (if any) so existing picks carry over.
@@ -454,6 +571,19 @@ events:SetScript("OnEvent", function(self, event, ...)
         self:RegisterEvent("CONFIRM_SUMMON")
         self:RegisterEvent("LFG_PROPOSAL_SHOW")
         self:RegisterEvent("LFG_ROLE_CHECK_SHOW")
+        self:RegisterEvent("START_PLAYER_COUNTDOWN")
+        self:RegisterEvent("CANCEL_PLAYER_COUNTDOWN")
+        self:RegisterEvent("PLAYER_REGEN_DISABLED")
+        self:RegisterEvent("ENCOUNTER_START")
+    elseif event == "START_PLAYER_COUNTDOWN" then
+        local _, timeRemaining, _, _, initiatedByName = ...
+        OnCountdownStart(timeRemaining, initiatedByName)
+    elseif event == "CANCEL_PLAYER_COUNTDOWN" then
+        cancelledAt = GetTime()
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        OnCombatStart()
+    elseif event == "ENCOUNTER_START" then
+        OnCombatStart(...)
     elseif event == "RESURRECT_REQUEST" then
         OnResurrect(...)
     elseif event == "CONFIRM_SUMMON" then
