@@ -5,7 +5,7 @@ local ADDON = ...
 local ICON = "Interface\\AddOns\\LazyRat\\Media\\icon"
 
 local DEFAULTS = {
-    res = true, bres = true, summon = true,
+    res = true, bres = true, summon = true, hideProfGear = true,
     queuePop = true, notifyChat = true, notifyWarning = true,
     autoSign = true,
     minimapShow = true, minimapAngle = 225,
@@ -56,6 +56,56 @@ local function OnSummon()
         Notify("Summon accepted from " .. who)
     end)
 end
+
+---------------------------------------------------------------------------
+-- Profession gear transforms (spell IDs from EllesmereUI's Hide Item Transforms)
+---------------------------------------------------------------------------
+local PROF_GEAR = {
+    [388658] = true, -- Blacksmithing
+    [394015] = true, -- Jewelcrafting
+    [391312] = true, -- Tailoring
+    [394007] = true, -- Engineering
+    [394008] = true, -- Enchanting
+    [394003] = true, -- Alchemy
+    [394016] = true, -- Inscription
+    [394001] = true, -- Leatherworking
+    [394005] = true, -- Herbalism
+    [394006] = true, -- Mining
+    [394011] = true, -- Skinning
+    [391775] = true, -- Cooking (Chef's Hat)
+}
+-- The fishing outfit stays on for the whole fishing channel, so it's removed when the channel stops.
+local FISHING_CHANNEL, FISHING_GEAR = 131476, { [394009] = true }
+
+-- Midnight hides aura data from addons in M+/raids (even out of combat) and index scans error there.
+local function AurasRestricted()
+    if C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret() then return true end
+    return not pcall(C_UnitAuras.GetBuffDataByIndex, "player", 1)
+end
+
+-- CancelUnitBuff is only blocked in combat; anything that lands mid-fight is swept on PLAYER_REGEN_ENABLED.
+local function RemoveProfGear(ids)
+    if not (db and db.hideProfGear) or InCombatLockdown() or AurasRestricted() then return end
+    for i = 40, 1, -1 do -- descending: cancelling shifts later indices down
+        local aura = C_UnitAuras.GetBuffDataByIndex("player", i)
+        local id = aura and aura.spellId
+        if id and not (issecretvalue and issecretvalue(id)) and ids[id] then
+            CancelUnitBuff("player", i)
+        end
+    end
+end
+
+local gearFrame = CreateFrame("Frame")
+gearFrame:RegisterUnitEvent("UNIT_AURA", "player")
+gearFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
+gearFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+gearFrame:SetScript("OnEvent", function(_, event, _, _, spellID)
+    if event ~= "UNIT_SPELLCAST_CHANNEL_STOP" then
+        RemoveProfGear(PROF_GEAR)
+    elseif not (issecretvalue and issecretvalue(spellID)) and spellID == FISHING_CHANNEL then
+        RemoveProfGear(FISHING_GEAR)
+    end
+end)
 
 ---------------------------------------------------------------------------
 -- Queue pops / role checks / premade sign-up
@@ -253,6 +303,9 @@ local function BuildMenu()
     general:Header("Summons")
     general:Check("summon", "Auto-accept summons")
     general:Note("If you're in combat, the summon is accepted once combat ends.")
+    general:Header("Profession Gear")
+    general:Check("hideProfGear", "Remove profession gear transforms", function() RemoveProfGear(PROF_GEAR) end)
+    general:Note("Takes off the profession outfit (Chef's Hat, smithing gear, fishing outfit, etc.) after you craft or gather.")
     general:Header("Minimap")
     general:Check("minimapShow", "Show minimap button", function() minimapBtn:SetShown(db.minimapShow) end)
 
